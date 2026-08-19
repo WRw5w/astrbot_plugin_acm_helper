@@ -20,6 +20,20 @@ class Crawler:
         return f"{rand}{sha512_hash}"
 
     @staticmethod
+    async def _fetch_json_with_retries(session: aiohttp.ClientSession, url: str, timeout: int, context: str, attempts: int = 3) -> dict:
+        for attempt in range(1, attempts + 1):
+            try:
+                async with session.get(url, timeout=timeout) as response:
+                    response.raise_for_status()
+                    return await response.json()
+            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                if attempt >= attempts:
+                    raise
+                delay = 2 ** (attempt - 1)
+                logger.warning(f"{context} 请求失败 ({attempt}/{attempts}): {e}，{delay} 秒后重试。")
+                await asyncio.sleep(delay)
+
+    @staticmethod
     async def fetch_luogu_submissions(session: aiohttp.ClientSession, user_row, start_timestamp: int, db: aiosqlite.Connection, config: dict) -> int | None:
         luogu_uid, qq_id = user_row['luogu_id'], user_row['qq_id']
         added_count = 0
@@ -96,8 +110,7 @@ class Crawler:
         
         added_count = 0
         try:
-            async with session.get(url, timeout=15) as response:
-                response.raise_for_status(); data = await response.json()
+            data = await Crawler._fetch_json_with_retries(session, url, 15, f"CF 用户 {handle}")
             if data.get('status') != 'OK':
                 logger.error(f"CF API 请求失败 (用户: {handle}): {data.get('comment')}")
                 return None
@@ -160,8 +173,7 @@ class Crawler:
             url = f"https://codeforces.com/api/{method_name}?" + '&'.join([f"{k}={v}" for k, v in params.items()])
             
             try:
-                async with session.get(url, timeout=30) as response:
-                    response.raise_for_status(); data = await response.json()
+                data = await Crawler._fetch_json_with_retries(session, url, 30, f"CF 用户 {handle} 第 {from_index // 100 + 1} 页")
                 if data.get('status') != 'OK':
                     logger.error(f"CF API 请求失败 (用户: {handle}, 页码: {from_index // 100 + 1}): {data.get('comment')}")
                     sync_failed = True
