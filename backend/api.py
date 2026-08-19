@@ -49,16 +49,23 @@ async def api_register_user():
                 start_timestamp = int(time.time()) - (7 * 24 * 60 * 60)
                 
                 logger.info(f"[API实时同步] 正在为新用户 {qq_id_str} 执行首次同步...")
+                sync_succeeded = True
                 async with aiohttp.ClientSession() as session:
                     if new_user_row['cf_handle']:
-                        await Crawler.fetch_cf_submissions(session, new_user_row, start_timestamp, db, plugin_config)
+                        cf_count = await Crawler.fetch_cf_submissions(session, new_user_row, start_timestamp, db, plugin_config)
+                        if cf_count is None: sync_succeeded = False
                     if new_user_row['luogu_id']:
-                        await Crawler.fetch_luogu_submissions(session, new_user_row, start_timestamp, db, plugin_config)
-                
-                await db.execute("UPDATE users SET last_sync_timestamp = ? WHERE qq_id = ?", (int(time.time()), qq_id_str))
-                await db.commit()
-                message += " 首次数据已实时同步完成！"
-                logger.info(f"[API实时同步] 新用户 {qq_id_str} 同步完成。")
+                        luogu_count = await Crawler.fetch_luogu_submissions(session, new_user_row, start_timestamp, db, plugin_config)
+                        if luogu_count is None: sync_succeeded = False
+
+                if sync_succeeded:
+                    await db.execute("UPDATE users SET last_sync_timestamp = ? WHERE qq_id = ?", (int(time.time()), qq_id_str))
+                    await db.commit()
+                    message += " 首次数据已实时同步完成！"
+                    logger.info(f"[API实时同步] 新用户 {qq_id_str} 同步完成。")
+                else:
+                    message += " 但首次同步失败，系统将保留同步起点并自动重试。"
+                    logger.warning(f"[API实时同步] 新用户 {qq_id_str} 同步失败，未更新同步时间。")
             except Exception as e:
                 logger.error(f"[API实时同步] 失败: {e}", exc_info=True)
                 message += " 但实时同步失败，数据将在15分钟内更新。"

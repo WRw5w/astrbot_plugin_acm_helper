@@ -130,12 +130,21 @@ class AcmHelperPlugin(Star):
         current_sync_time = int(time.time()); seven_days_ago = current_sync_time - (7 * 24 * 60 * 60)
         last_sync = user['last_sync_timestamp'] or 0; start_timestamp = seven_days_ago if last_sync == 0 else last_sync
         sync_type = "7日全量" if last_sync == 0 else "增量"; logger.info(f"  -> 为用户 {user['name']} 执行 [{sync_type}] 同步...")
-        user_new_count = 0
+        user_new_count = 0; sync_succeeded = True
         async with aiohttp.ClientSession() as session:
-            if user['cf_handle']: user_new_count += await Crawler.fetch_cf_submissions(session, user, start_timestamp, self.db, self.config)
-            if user['luogu_id']: user_new_count += await Crawler.fetch_luogu_submission(session, user, start_timestamp, self.db, self.config)
+            if user['cf_handle']:
+                cf_count = await Crawler.fetch_cf_submissions(session, user, start_timestamp, self.db, self.config)
+                if cf_count is None: sync_succeeded = False
+                else: user_new_count += cf_count
+            if user['luogu_id']:
+                luogu_count = await Crawler.fetch_luogu_submission(session, user, start_timestamp, self.db, self.config)
+                if luogu_count is None: sync_succeeded = False
+                else: user_new_count += luogu_count
         if user_new_count > 0: logger.info(f"    为用户 {user['name']} 同步了 {user_new_count} 条新记录。")
-        await self.db.execute("UPDATE users SET last_sync_timestamp = ? WHERE qq_id = ?", (current_sync_time, user['qq_id'])); await self.db.commit()
+        if sync_succeeded:
+            await self.db.execute("UPDATE users SET last_sync_timestamp = ? WHERE qq_id = ?", (current_sync_time, user['qq_id'])); await self.db.commit()
+        else:
+            logger.warning(f"    用户 {user['name']} 同步失败，保留上次同步时间以便下次重试。")
 
     async def sync_all_users_data(self):
         logger.info(f"[智能同步] 开始执行 {time.strftime('%H:%M')} 周期的同步任务...")
@@ -165,8 +174,12 @@ class AcmHelperPlugin(Star):
         logger.info(f"  -> 为用户 {user['name']} 执行 [{days}天深度] 同步...")
         user_new_count = 0
         async with aiohttp.ClientSession() as session:
-            if user['cf_handle']: user_new_count += await Crawler.fetch_cf_submissions_paginated(session, user, start_timestamp, self.db, self.config)
-            if user['luogu_id']: user_new_count += await Crawler.fetch_luogu_submission(session, user, start_timestamp, self.db, self.config)
+            if user['cf_handle']:
+                cf_count = await Crawler.fetch_cf_submissions_paginated(session, user, start_timestamp, self.db, self.config)
+                if cf_count is not None: user_new_count += cf_count
+            if user['luogu_id']:
+                luogu_count = await Crawler.fetch_luogu_submission(session, user, start_timestamp, self.db, self.config)
+                if luogu_count is not None: user_new_count += luogu_count
         if user_new_count > 0: logger.info(f"    为用户 {user['name']} 同步了 {user_new_count} 条新记录。")
 
     async def _generate_rank_image(self, title: str, users_data: list) -> bytes | str:

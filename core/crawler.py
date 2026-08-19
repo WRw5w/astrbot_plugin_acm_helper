@@ -20,7 +20,7 @@ class Crawler:
         return f"{rand}{sha512_hash}"
 
     @staticmethod
-    async def fetch_luogu_submissions(session: aiohttp.ClientSession, user_row, start_timestamp: int, db: aiosqlite.Connection, config: dict) -> int:
+    async def fetch_luogu_submissions(session: aiohttp.ClientSession, user_row, start_timestamp: int, db: aiosqlite.Connection, config: dict) -> int | None:
         luogu_uid, qq_id = user_row['luogu_id'], user_row['qq_id']
         added_count = 0
         luogu_cookie = config.get("luogu_cookie")
@@ -28,7 +28,7 @@ class Crawler:
         
         if not luogu_cookie or not luogu_csrf_token:
             logger.warning("[同步模块] 洛谷 Cookie 或 CSRF-Token 未配置，跳过。")
-            return 0
+            return None
             
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -37,7 +37,8 @@ class Crawler:
             'x-requested-with': 'XMLHttpRequest',
             'referer': f'https://www.luogu.com.cn/record/list?user={luogu_uid}&status=12',
         }
-        page, stop_fetching = 1, False
+        page, stop_fetching, sync_failed = 1, False, False
+        processed_in_sync = set()
 
         while not stop_fetching:
             url = f"https://www.luogu.com.cn/record/list?user={luogu_uid}&page={page}&status=12&_contentOnly=1"
@@ -45,6 +46,7 @@ class Crawler:
                 async with session.get(url, headers=headers, timeout=15) as response:
                     if response.status == 403:
                         logger.error(f"洛谷API拒绝访问(403)，Cookie可能已过期。")
+                        sync_failed = True
                         break
                     response.raise_for_status()
                     data = await response.json()
@@ -57,27 +59,31 @@ class Crawler:
                 for record in records:
                     if record['submitTime'] >= start_timestamp:
                         pid = record['problem']['pid']
+                        if pid in processed_in_sync:
+                            continue
                         async with db.execute("SELECT 1 FROM submissions WHERE user_qq_id = ? AND platform = 'luogu' AND problem_id = ?", (qq_id, pid)) as c:
                             if not await c.fetchone():
                                 difficulty = luogu_difficulty_map.get(record['problem'].get('difficulty', 0), "未知")
                                 insert_tasks.append((qq_id, 'luogu', pid, record['problem']['title'], difficulty, f"https://www.luogu.com.cn/problem/{pid}", record['submitTime']))
+                                processed_in_sync.add(pid)
                     else:
                         stop_fetching = True
                         break
                 
                 if insert_tasks:
-                    await db.executemany("INSERT INTO submissions (user_qq_id, platform, problem_id, problem_name, problem_rating, problem_url, submit_time) VALUES (?, ?, ?, ?, ?, ?, ?)", insert_tasks)
+                    await db.executemany("INSERT OR IGNORE INTO submissions (user_qq_id, platform, problem_id, problem_name, problem_rating, problem_url, submit_time) VALUES (?, ?, ?, ?, ?, ?, ?)", insert_tasks)
                     await db.commit()
                     added_count += len(insert_tasks)
                 page += 1
                 await asyncio.sleep(0.5)
             except Exception as e:
                 logger.error(f"处理洛谷用户 {luogu_uid} 第 {page} 页时出错: {e}")
+                sync_failed = True
                 break
-        return added_count
+        return None if sync_failed else added_count
 
     @staticmethod
-    async def fetch_cf_submissions(session: aiohttp.ClientSession, user_row: aiosqlite.Row, start_timestamp: int, db: aiosqlite.Connection, config: dict) -> int:
+    async def fetch_cf_submissions(session: aiohttp.ClientSession, user_row: aiosqlite.Row, start_timestamp: int, db: aiosqlite.Connection, config: dict) -> int | None:
         handle = user_row['cf_handle']; qq_id = user_row['qq_id']
         api_key = config.get("cf_api_key"); api_secret = config.get("cf_api_secret")
         method_name = "user.status"; params = {"handle": handle, "from": "1", "count": "100"}
@@ -94,7 +100,7 @@ class Crawler:
                 response.raise_for_status(); data = await response.json()
             if data.get('status') != 'OK':
                 logger.error(f"CF API 请求失败 (用户: {handle}): {data.get('comment')}")
-                return 0
+                return None
 
             insert_tasks, processed_in_sync = [], set()
             for sub in data.get('result', []):
@@ -132,17 +138,18 @@ class Crawler:
 
         except Exception as e:
             logger.error(f"处理 CF 用户 {handle} 时发生严重错误: {e}", exc_info=True)
-            
+            return None
+
         return added_count
     
     @staticmethod
-    async def fetch_cf_submissions_paginated(session: aiohttp.ClientSession, user_row: aiosqlite.Row, start_timestamp: int, db: aiosqlite.Connection, config: dict) -> int:
+    async def fetch_cf_submissions_paginated(session: aiohttp.ClientSession, user_row: aiosqlite.Row, start_timestamp: int, db: aiosqlite.Connection, config: dict) -> int | None:
         """深度、分页的CF爬虫，获取指定时间内所有记录。用于/acm sql命令。"""
         handle = user_row['cf_handle']; qq_id = user_row['qq_id']
         api_key = config.get("cf_api_key"); api_secret = config.get("cf_api_secret")
         method_name = "user.status"
         
-        from_index, stop_fetching = 1, False
+        from_index, stop_fetching, sync_failed = 1, False, False
         all_insert_tasks = []; processed_in_sync = set()
         while not stop_fetching:
             params = {"handle": handle, "from": str(from_index), "count": "100"}
@@ -155,7 +162,10 @@ class Crawler:
             try:
                 async with session.get(url, timeout=30) as response:
                     response.raise_for_status(); data = await response.json()
-                if data.get('status') != 'OK': logger.error(f"CF API 请求失败 (用户: {handle}, 页码: {from_index // 100 + 1}): {data.get('comment')}"); break
+                if data.get('status') != 'OK':
+                    logger.error(f"CF API 请求失败 (用户: {handle}, 页码: {from_index // 100 + 1}): {data.get('comment')}")
+                    sync_failed = True
+                    break
                 
                 subs = data.get('result', [])
                 if not subs: break
@@ -185,23 +195,23 @@ class Crawler:
                 await asyncio.sleep(0.5)
             except Exception as e:
                 logger.error(f"处理 CF 用户 {handle} (深度同步) 时发生错误: {e}", exc_info=False)
+                sync_failed = True
                 break
         
         if all_insert_tasks:
             await db.executemany("INSERT OR IGNORE INTO submissions (user_qq_id, platform, problem_id, problem_name, problem_rating, problem_url, submit_time) VALUES (?, ?, ?, ?, ?, ?, ?)", all_insert_tasks)
             await db.commit()
-            return len(all_insert_tasks)
-        return 0
+        return None if sync_failed else len(all_insert_tasks)
     
     @staticmethod
-    async def fetch_luogu_submission(session: aiohttp.ClientSession, user_row, start_timestamp: int, db: aiosqlite.Connection, config: dict) -> int:
+    async def fetch_luogu_submission(session: aiohttp.ClientSession, user_row, start_timestamp: int, db: aiosqlite.Connection, config: dict) -> int | None:
         luogu_uid, qq_id = user_row['luogu_id'], user_row['qq_id']
         luogu_cookie = config.get("luogu_cookie")
         luogu_csrf_token = config.get("luogu_csrf_token")
         
         if not luogu_cookie or not luogu_csrf_token:
             logger.warning("[同步模块] 洛谷 Cookie 或 CSRF-Token 未配置，跳过。")
-            return 0
+            return None
             
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -210,7 +220,7 @@ class Crawler:
             'x-requested-with': 'XMLHttpRequest',
             'referer': f'https://www.luogu.com.cn/record/list?user={luogu_uid}&status=12',
         }
-        page, stop_fetching = 1, False
+        page, stop_fetching, sync_failed = 1, False, False
         
         # --- 优化1: 创建一个大列表，用于存储所有页面找到的新记录 ---
         all_insert_tasks = [] 
@@ -222,6 +232,7 @@ class Crawler:
                 async with session.get(url, headers=headers, timeout=30) as response: # 增加超时时间
                     if response.status == 403:
                         logger.error(f"洛谷API拒绝访问(403)，Cookie可能已过期。")
+                        sync_failed = True
                         break
                     response.raise_for_status()
                     data = await response.json()
@@ -256,12 +267,11 @@ class Crawler:
                 await asyncio.sleep(0.5) # 礼貌性延时
             except Exception as e:
                 logger.error(f"处理洛谷用户 {luogu_uid} 第 {page} 页时出错: {e}")
+                sync_failed = True
                 break
                 
         # --- 优化1的应用: 所有页面处理完后，执行一次总的数据库写入 ---
         if all_insert_tasks:
             await db.executemany("INSERT OR IGNORE INTO submissions (user_qq_id, platform, problem_id, problem_name, problem_rating, problem_url, submit_time) VALUES (?, ?, ?, ?, ?, ?, ?)", all_insert_tasks)
             await db.commit()
-            return len(all_insert_tasks)
-            
-        return 0
+        return None if sync_failed else len(all_insert_tasks)
