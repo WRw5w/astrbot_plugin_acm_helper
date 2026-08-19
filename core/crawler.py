@@ -30,7 +30,13 @@ class Crawler:
             logger.warning("[同步模块] 洛谷 Cookie 或 CSRF-Token 未配置，跳过。")
             return 0
             
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36', 'Cookie': luogu_cookie, 'x-csrf-token': luogu_csrf_token}
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Cookie': luogu_cookie,
+            'x-csrf-token': luogu_csrf_token,
+            'x-requested-with': 'XMLHttpRequest',
+            'referer': f'https://www.luogu.com.cn/record/list?user={luogu_uid}&status=12',
+        }
         page, stop_fetching = 1, False
 
         while not stop_fetching:
@@ -197,7 +203,13 @@ class Crawler:
             logger.warning("[同步模块] 洛谷 Cookie 或 CSRF-Token 未配置，跳过。")
             return 0
             
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36', 'Cookie': luogu_cookie, 'x-csrf-token': luogu_csrf_token}
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Cookie': luogu_cookie,
+            'x-csrf-token': luogu_csrf_token,
+            'x-requested-with': 'XMLHttpRequest',
+            'referer': f'https://www.luogu.com.cn/record/list?user={luogu_uid}&status=12',
+        }
         page, stop_fetching = 1, False
         
         # --- 优化1: 创建一个大列表，用于存储所有页面找到的新记录 ---
